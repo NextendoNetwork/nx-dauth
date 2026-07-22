@@ -244,6 +244,7 @@ func main() {
 					ClientID string `json:"client_id"`
 				} `json:"token_requests"`
 			}
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 			body, _ := io.ReadAll(r.Body)
 			json.Unmarshal(body, &req)
 			results := make([]map[string]any, 0, len(req.TokenRequests))
@@ -260,6 +261,7 @@ func main() {
 					VendorID string `json:"vendor_id"`
 				} `json:"token_requests"`
 			}
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 			body, _ := io.ReadAll(r.Body)
 			json.Unmarshal(body, &req)
 			exp := time.Now().Unix() + 86400
@@ -273,6 +275,7 @@ func main() {
 			return
 
 		case strings.HasPrefix(host, "aauth") && p == "/v5/application_auth_token":
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 			r.ParseForm()
 			appID := r.FormValue("application_id")
 			appVer := r.FormValue("application_version")
