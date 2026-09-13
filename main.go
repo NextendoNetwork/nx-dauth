@@ -83,6 +83,15 @@ func versionGateEnforced() bool {
 	return err == nil
 }
 
+// Consoles send application_version as 8 hex digits, e.g. "001f0000" for 13.0.5.
+func parseAppVersion(s string) (int, error) {
+	if len(s) != 8 {
+		return 0, fmt.Errorf("want 8 hex digits, got %q", s)
+	}
+	n, err := strconv.ParseUint(s, 16, 32)
+	return int(n), err
+}
+
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func randBytes(n int) []byte {
@@ -320,7 +329,7 @@ func main() {
 			if rule, gated := minAppVersion[strings.ToLower(appID)]; gated {
 				min := rule.min
 				enforce := rule.enforce && versionGateEnforced()
-				v, err := strconv.Atoi(appVer)
+				v, err := parseAppVersion(appVer)
 				// LOGGUÉ à chaque appel sur un titre suivi, qu'on applique ou non — c'est
 				// la seule façon de savoir un jour si application_version contient vraiment
 				// l'entier attendu, avant de faire confiance à un refus dessus.
