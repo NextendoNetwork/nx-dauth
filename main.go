@@ -34,6 +34,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,6 +44,52 @@ func getenv(k, d string) string {
 		return v
 	}
 	return d
+}
+
+// --- passage obligé par la mise à jour (2026-08-16) ---------------------------
+//
+// Nintendo encode la version d'un jeu comme un entier interne, multiple de 65536
+// (le "vXXXXXX" des noms de fichier NSP/dump). Lu directement sur nos propres
+// dumps, pas deviné :
+//   ARMS                base v0, mise à jour 5.5.1 -> 1245184
+//   Mario Tennis Aces    base v0, mise à jour 3.1.1 ->  851968
+//
+// Ce n'est PAS un contrôle NEX : nextendo-nex ne reçoit jamais la version du
+// client sur le fil, NexVersion n'existe que côté serveur (voir settings.go).
+// C'est ICI, dans l'échange application_auth_token — qui a lieu AVANT que le jeu
+// touche NEX — que la console transmet réellement sa version, via le champ
+// standard `application_version`. C'est le seul point d'accroche qui existe.
+type versionRule struct {
+	min     int
+	enforce bool
+}
+
+var minAppVersion = map[string]versionRule{
+	"01009b500007c000": {1245184, false}, // ARMS
+	"0100bde00862a000": {851968, false},  // Mario Tennis Aces
+	"01006a800016e000": {2031616, true},  // Super Smash Bros. Ultimate 13.0.5
+}
+
+// versionGateEnforce : par défaut on se contente de LOGGUER ce que la console
+// envoie réellement dans application_version, sans jamais rien refuser — le
+// format exact de ce champ (est-ce vraiment cet entier brut ?) n'a encore
+// jamais été confirmé sur une vraie requête. Mettre NEXTENDO_VERSION_GATE=1
+// une fois qu'une vraie capture aura confirmé la forme du champ.
+func versionGateEnforced() bool {
+	if getenv("NEXTENDO_VERSION_GATE", "") == "1" {
+		return true
+	}
+	_, err := os.Stat(getenv("NX_DATA", "/data") + "/version_gate_enforce")
+	return err == nil
+}
+
+// Consoles send application_version as 8 hex digits, e.g. "001f0000" for 13.0.5.
+func parseAppVersion(s string) (int, error) {
+	if len(s) != 8 {
+		return 0, fmt.Errorf("want 8 hex digits, got %q", s)
+	}
+	n, err := strconv.ParseUint(s, 16, 32)
+	return int(n), err
 }
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -279,6 +326,32 @@ func main() {
 			r.ParseForm()
 			appID := r.FormValue("application_id")
 			appVer := r.FormValue("application_version")
+			if rule, gated := minAppVersion[strings.ToLower(appID)]; gated {
+				min := rule.min
+				enforce := rule.enforce && versionGateEnforced()
+				v, err := parseAppVersion(appVer)
+				// LOGGUÉ à chaque appel sur un titre suivi, qu'on applique ou non — c'est
+				// la seule façon de savoir un jour si application_version contient vraiment
+				// l'entier attendu, avant de faire confiance à un refus dessus.
+				log.Printf("[nx-dauth][VersionGate] app=%s raw_version=%q parsed=%d parse_err=%v min=%d enforce=%v",
+					appID, appVer, v, err, min, enforce)
+				if enforce {
+					if err != nil {
+						// Champ absent/illisible : on ne bloque JAMAIS sur une valeur qu'on
+						// n'a pas pu interpréter -- refuser à l'aveugle romprait un client
+						// légitime dont le champ a une forme qu'on n'a pas prévue.
+						log.Printf("[nx-dauth][VersionGate] app=%s: version illisible, on laisse passer", appID)
+					} else if v < min {
+						w.WriteHeader(http.StatusForbidden)
+						json.NewEncoder(w).Encode(map[string]any{
+							"errorCode": "application_update_required",
+							"detail":    fmt.Sprintf("application_version %d < %d required", v, min),
+						})
+						log.Printf("[nx-dauth][VersionGate] app=%s REFUSÉ (version=%d < %d)", appID, v, min)
+						return
+					}
+				}
+			}
 			json.NewEncoder(w).Encode(map[string]any{
 				"expires_in":             86400,
 				"application_auth_token": mkAppToken(appID, appVer),
