@@ -59,9 +59,15 @@ func getenv(k, d string) string {
 // C'est ICI, dans l'échange application_auth_token — qui a lieu AVANT que le jeu
 // touche NEX — que la console transmet réellement sa version, via le champ
 // standard `application_version`. C'est le seul point d'accroche qui existe.
-var minAppVersion = map[string]int{
-	"01009b500007c000": 1245184, // ARMS
-	"0100bde00862a000": 851968,  // Mario Tennis Aces
+type versionRule struct {
+	min     int
+	enforce bool
+}
+
+var minAppVersion = map[string]versionRule{
+	"01009b500007c000": {1245184, false}, // ARMS
+	"0100bde00862a000": {851968, false},  // Mario Tennis Aces
+	"01006a800016e000": {2031616, true},  // Super Smash Bros. Ultimate 13.0.5
 }
 
 // versionGateEnforce : par défaut on se contente de LOGGUER ce que la console
@@ -69,7 +75,13 @@ var minAppVersion = map[string]int{
 // format exact de ce champ (est-ce vraiment cet entier brut ?) n'a encore
 // jamais été confirmé sur une vraie requête. Mettre NEXTENDO_VERSION_GATE=1
 // une fois qu'une vraie capture aura confirmé la forme du champ.
-var versionGateEnforce = getenv("NEXTENDO_VERSION_GATE", "") == "1"
+func versionGateEnforced() bool {
+	if getenv("NEXTENDO_VERSION_GATE", "") == "1" {
+		return true
+	}
+	_, err := os.Stat(getenv("NX_DATA", "/data") + "/version_gate_enforce")
+	return err == nil
+}
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
@@ -305,14 +317,16 @@ func main() {
 			r.ParseForm()
 			appID := r.FormValue("application_id")
 			appVer := r.FormValue("application_version")
-			if min, gated := minAppVersion[strings.ToLower(appID)]; gated {
+			if rule, gated := minAppVersion[strings.ToLower(appID)]; gated {
+				min := rule.min
+				enforce := rule.enforce && versionGateEnforced()
 				v, err := strconv.Atoi(appVer)
 				// LOGGUÉ à chaque appel sur un titre suivi, qu'on applique ou non — c'est
 				// la seule façon de savoir un jour si application_version contient vraiment
 				// l'entier attendu, avant de faire confiance à un refus dessus.
 				log.Printf("[nx-dauth][VersionGate] app=%s raw_version=%q parsed=%d parse_err=%v min=%d enforce=%v",
-					appID, appVer, v, err, min, versionGateEnforce)
-				if versionGateEnforce {
+					appID, appVer, v, err, min, enforce)
+				if enforce {
 					if err != nil {
 						// Champ absent/illisible : on ne bloque JAMAIS sur une valeur qu'on
 						// n'a pas pu interpréter -- refuser à l'aveugle romprait un client
